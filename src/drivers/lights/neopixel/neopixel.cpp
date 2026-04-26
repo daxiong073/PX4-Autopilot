@@ -39,15 +39,26 @@
  *
  */
 
+#include <stdlib.h>
 #include <string.h>
 #include <px4_platform_common/px4_config.h>
 
-#include <lib/led/led.h>
 #include <px4_platform_common/getopt.h>
 #include <px4_platform_common/px4_work_queue/ScheduledWorkItem.hpp>
 #include <px4_platform_common/log.h>
 #include <px4_platform_common/module.h>
 #include <drivers/drv_neopixel.h>
+
+#if defined(BOARD_HAS_DAXIONG_LED_STRIP)
+#include <drivers/drv_hrt.h>
+#include <uORB/Subscription.hpp>
+#include <uORB/topics/vehicle_local_position.h>
+#include <uORB/topics/vehicle_status.h>
+
+using namespace time_literals;
+#else
+#include <lib/led/led.h>
+#endif
 
 class NEOPIXEL : public px4::ScheduledWorkItem,  public ModuleBase<NEOPIXEL>
 {
@@ -76,12 +87,22 @@ public:
 private:
 	unsigned int _number_of_packages{BOARD_HAS_N_S_RGB_LED};
 
+#if defined(BOARD_HAS_DAXIONG_LED_STRIP)
+	vehicle_status_s _vehicle_status{};
+	vehicle_local_position_s _vehicle_local_position{};
+
+	uORB::Subscription _vehicle_status_sub{ORB_ID(vehicle_status)};
+	uORB::Subscription _vehicle_local_position_sub{ORB_ID(vehicle_local_position)};
+
+	bool _twinkle{false};
+#else
 	LedController		_led_controller;
+#endif
 
 	NEOPIXEL(const NEOPIXEL &) = delete;
 	NEOPIXEL operator=(const NEOPIXEL &) = delete;
 
-	neopixel::NeoLEDData *_leds;
+	neopixel::NeoLEDData *_leds{nullptr};
 };
 
 NEOPIXEL::NEOPIXEL(unsigned int number_of_packages) :
@@ -93,6 +114,7 @@ NEOPIXEL::NEOPIXEL(unsigned int number_of_packages) :
 NEOPIXEL::~NEOPIXEL()
 {
 	neopixel_deinit();
+	delete[] _leds;
 }
 
 int NEOPIXEL::init()
@@ -103,7 +125,10 @@ int NEOPIXEL::init()
 		return PX4_ERROR;
 	}
 
-	neopixel_init(_leds, _number_of_packages);
+	if (neopixel_init(_leds, _number_of_packages) != PX4_OK) {
+		return PX4_ERROR;
+	}
+
 	neopixel_write(_leds, _number_of_packages);
 	ScheduleNow();
 	return OK;
@@ -151,7 +176,7 @@ int NEOPIXEL::task_spawn(int argc, char *argv[])
 int NEOPIXEL::print_status()
 {
 
-	PX4_INFO("Controlling %i LEDs", _number_of_packages);
+	PX4_INFO("Controlling %u LEDs", _number_of_packages);
 
 	return 0;
 }
@@ -173,7 +198,7 @@ $ neopixel -n 8
 To drive all available leds.
 )DESCR_STR");
 
-PRINT_MODULE_USAGE_NAME("newpixel", "driver");
+PRINT_MODULE_USAGE_NAME("neopixel", "driver");
 PRINT_MODULE_USAGE_DEFAULT_COMMANDS();
 return 0;
 }
@@ -194,6 +219,56 @@ void NEOPIXEL::Run()
       return;
     }
 
+#if defined(BOARD_HAS_DAXIONG_LED_STRIP)
+	_vehicle_status_sub.update(&_vehicle_status);
+	_vehicle_local_position_sub.update(&_vehicle_local_position);
+
+	_twinkle = !_twinkle;
+
+	for (unsigned int led = 0; led < _number_of_packages; led++) {
+		_leds[led].R() = 240;
+		_leds[led].G() = led < (_number_of_packages / 2) ? 240 : 0;
+		_leds[led].B() = 0;
+	}
+
+	if (_vehicle_local_position.v_xy_valid && _twinkle) {
+		for (unsigned int quadrant = 0; quadrant < 4; quadrant++) {
+			const bool should_dim =
+				(quadrant == 0 && (_vehicle_local_position.vx > 0.f || _vehicle_local_position.vy < 0.f)) ||
+				(quadrant == 1 && (_vehicle_local_position.vx > 0.f || _vehicle_local_position.vy > 0.f)) ||
+				(quadrant == 2 && (_vehicle_local_position.vx < 0.f || _vehicle_local_position.vy > 0.f)) ||
+				(quadrant == 3 && (_vehicle_local_position.vx < 0.f || _vehicle_local_position.vy < 0.f));
+
+			if (should_dim) {
+				for (unsigned int offset = 0; offset < 6; offset++) {
+					const unsigned int led = quadrant * 8 + offset;
+
+					if (led < _number_of_packages) {
+						_leds[led].R() = 0;
+						_leds[led].G() = 0;
+						_leds[led].B() = 0;
+					}
+				}
+			}
+		}
+	}
+
+	if (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_OFFBOARD) {
+		for (unsigned int led = 0; led < _number_of_packages; led++) {
+			if (led % 8 < 2) {
+				_leds[led].R() = 0;
+				_leds[led].G() = 240;
+				_leds[led].B() = 240;
+			}
+		}
+	}
+
+	neopixel_write(_leds, _number_of_packages);
+	neopixel_write(_leds, _number_of_packages);
+	neopixel_write(_leds, _number_of_packages);
+
+	ScheduleDelayed(1_s);
+#else
 	LedControlData led_control_data;
 
 	if (_led_controller.update(led_control_data) == 1) {
@@ -242,6 +317,7 @@ void NEOPIXEL::Run()
 
 	/* re-queue ourselves to run again later */
 	ScheduleDelayed(_led_controller.maximum_update_interval());
+#endif
 }
 
 extern "C" __EXPORT int neopixel_main(int argc, char *argv[])

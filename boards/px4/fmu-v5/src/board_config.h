@@ -240,6 +240,14 @@
 
 #define BOARD_UI_LED_PWM_DRIVE_ACTIVE_LOW 1
 
+/* WS2812/NeoPixel LED strip on FMU AUX6 (PD14, TIM4 CH3) */
+#define BOARD_HAS_DAXIONG_LED_STRIP 1
+#define BOARD_HAS_N_S_RGB_LED       32
+#define S_RGB_LED_TIMER             4
+#define S_RGB_LED_CHANNEL           3
+#define S_RGB_LED_DMA               DMAMAP_TIM4_CH3
+#define S_RGB_LED_TIM_GPIO          GPIO_TIM4_CH3OUT_2
+
 
 /* Power supply control and monitoring GPIOs */
 
